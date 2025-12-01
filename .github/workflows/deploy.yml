@@ -1,0 +1,137 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Позволяет запускать вручную
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+      # 1. Получаем код из репозитория
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      # 2. Проверяем наличие секретов
+      - name: Check secrets
+        env:
+          HAS_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
+          HAS_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID != '' }}
+        run: |
+          echo "Has BOT_TOKEN: $HAS_BOT_TOKEN"
+          echo "Has CHAT_ID: $HAS_CHAT_ID"
+          if [ "$HAS_BOT_TOKEN" = "false" ] || [ "$HAS_CHAT_ID" = "false" ]; then
+            echo "⚠️ Внимание: Не все секреты настроены!"
+            echo "Чтобы форма работала, добавьте:"
+            echo "1. TELEGRAM_BOT_TOKEN в Settings → Secrets and variables → Actions"
+            echo "2. TELEGRAM_CHAT_ID в Settings → Secrets and variables → Actions"
+          else
+            echo "✅ Все секреты настроены"
+          fi
+      
+      # 3. Заменяем плейсхолдеры на реальные секреты
+      - name: Replace tokens in HTML files
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "🔧 Заменяю плейсхолдеры в HTML файлах..."
+          
+          # Создаем Python скрипт для замены
+          cat > replace_tokens.py << 'EOF'
+          import os
+          import re
+          
+          bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+          chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+          
+          print(f"Токен получен: {'Да' if bot_token else 'Нет'} (длина: {len(bot_token)})")
+          print(f"Chat ID получен: {'Да' if chat_id else 'Нет'}")
+          
+          # Проверяем наличие файлов
+          files_to_process = []
+          for filename in ['forms.html', 'index.html', 'admin.html']:
+              if os.path.exists(filename):
+                  files_to_process.append(filename)
+          
+          print(f"Найдено файлов для обработки: {len(files_to_process)}")
+          
+          for filename in files_to_process:
+              print(f"\nОбрабатываю файл: {filename}")
+              try:
+                  with open(filename, 'r', encoding='utf-8') as file:
+                      content = file.read()
+                  
+                  # Проверяем наличие плейсхолдеров
+                  token_before = "TELEGRAM_BOT_TOKEN_PLACEHOLDER" in content
+                  chat_before = "TELEGRAM_CHAT_ID_PLACEHOLDER" in content
+                  
+                  # Заменяем плейсхолдеры
+                  content = content.replace('TELEGRAM_BOT_TOKEN_PLACEHOLDER', bot_token)
+                  content = content.replace('TELEGRAM_CHAT_ID_PLACEHOLDER', chat_id)
+                  
+                  # Проверяем замену
+                  token_after = "TELEGRAM_BOT_TOKEN_PLACEHOLDER" in content
+                  chat_after = "TELEGRAM_CHAT_ID_PLACEHOLDER" in content
+                  
+                  with open(filename, 'w', encoding='utf-8') as file:
+                      file.write(content)
+                      
+                  print(f"  ✅ Замена токена: {'Да → Нет' if token_before and not token_after else 'Не найдено'}")
+                  print(f"  ✅ Замена chat_id: {'Да → Нет' if chat_before and not chat_after else 'Не найдено'}")
+                  
+              except Exception as e:
+                  print(f"  ❌ Ошибка при обработке файла {filename}: {e}")
+          EOF
+          
+          # Запускаем скрипт
+          python replace_tokens.py
+      
+      # 4. Проверяем результат замены
+      - name: Verify replacement
+        run: |
+          echo "🔍 Проверяю результат замены..."
+          
+          # Проверяем forms.html
+          if [ -f "forms.html" ]; then
+            echo "forms.html:"
+            if grep -q "TELEGRAM_BOT_TOKEN_PLACEHOLDER" forms.html || grep -q "TELEGRAM_CHAT_ID_PLACEHOLDER" forms.html; then
+              echo "  ❌ ВНИМАНИЕ: Плейсхолдеры не заменены!"
+              echo "  Проверьте:"
+              echo "  1. Правильность названий секретов в GitHub"
+              echo "  2. Что секреты действительно содержат значения"
+              echo "  3. Логи выполнения workflow"
+            else
+              echo "  ✅ Плейсхолдеры заменены"
+              
+              # Проверяем наличие реального токена
+              if grep -q "://api.telegram.org/bot" forms.html; then
+                echo "  ✅ Найден Telegram API URL"
+              else
+                echo "  ⚠️ Telegram API URL не найден"
+              fi
+            fi
+          else
+            echo "  ❌ Файл forms.html не найден"
+          fi
+      
+      # 5. Деплоим на GitHub Pages
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
+          publish_branch: gh-pages
+          force_orphan: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
